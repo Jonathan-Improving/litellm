@@ -17,17 +17,14 @@
 # gateway and backend get their host and port defaults first, so ARGS such as
 # --port 8080 override them. An unknown first word is executed as-is (docker run
 # <image> sh). PgBouncer is not a component: LITELLM_PGBOUNCER_ENABLED=true
-# starts it inside proxy and gateway.
+# starts it inside proxy and gateway. Components that write Prometheus samples
+# start with an empty PROMETHEUS_MULTIPROC_DIR; metrics, collector and raw
+# commands get the directory created but keep the workers' files.
 set -eu
 
 usage() {
-    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2
 }
-
-if [ -n "${PROMETHEUS_MULTIPROC_DIR:-}" ]; then
-    mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
-    rm -f "$PROMETHEUS_MULTIPROC_DIR"/*.db
-fi
 
 component="${LITELLM_COMPONENT:-proxy}"
 case "${1:-}" in
@@ -42,6 +39,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
+        [ -z "${PROMETHEUS_MULTIPROC_DIR:-}" ] || mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
         exec "$@"
         ;;
 esac
@@ -74,6 +72,16 @@ case "$component" in
         exit 64
         ;;
 esac
+
+if [ -n "${PROMETHEUS_MULTIPROC_DIR:-}" ]; then
+    case "$component" in
+        metrics|collector) mkdir -p "$PROMETHEUS_MULTIPROC_DIR" ;;
+        *)
+            mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
+            rm -f "$PROMETHEUS_MULTIPROC_DIR"/*.db
+            ;;
+    esac
+fi
 
 case "${USE_DDTRACE:-}" in
     [Tt][Rr][Uu][Ee])

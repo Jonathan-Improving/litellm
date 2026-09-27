@@ -45,7 +45,7 @@ docker run -e DATABASE_URL=... litellm migrations                 # one-off sche
 docker run -it litellm sh                                         # anything else runs verbatim
 ```
 
-PgBouncer is not a separate component: `LITELLM_PGBOUNCER_ENABLED=true` starts an in-container PgBouncer in front of `DATABASE_URL` inside `proxy` and `gateway`. `USE_DDTRACE=true` wraps whichever component runs with `ddtrace-run`, and `PROMETHEUS_MULTIPROC_DIR` is emptied of stale samples before any workers fork
+PgBouncer is not a separate component: `LITELLM_PGBOUNCER_ENABLED=true` starts an in-container PgBouncer in front of `DATABASE_URL` inside `proxy` and `gateway`. `USE_DDTRACE=true` wraps whichever component runs with `ddtrace-run`, and `PROMETHEUS_MULTIPROC_DIR` is emptied of stale samples before any workers fork (the `metrics` and `collector` sidecars only read it, so their restart keeps the live samples)
 
 The image runs as uid `65532` (`nonroot` in the Wolfi base) and also works as an arbitrary uid in gid 0, the shape OpenShift `restricted-v2` assigns, because everything it writes at runtime lives under `/app/.cache`, `/var/lib/litellm` and `/tmp`. Mount those (or set `readOnlyRootFilesystem` with emptyDirs there) for a read-only root filesystem. Prisma's CLI and engines are baked under `/opt/prisma`, so migrations need neither network nor a writable home
 
