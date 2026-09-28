@@ -604,6 +604,28 @@ async def test_flux2_router_does_not_retry_an_edit_whose_reference_image_is_empt
     assert sent_requests == []
 
 
+@pytest.mark.parametrize("image", (b"", [b""], [_png(64, 64), b""]), ids=("bare", "listed", "after-a-real-one"))
+def test_flux2_image_edit_rejects_empty_reference_bytes_before_calling_azure(image: bytes | list[bytes]):
+    sent_requests: Final[list[httpx.Request]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent_requests.append(request)
+        return _edit_ok(request)
+
+    with pytest.raises(litellm.BadRequestError, match="is empty") as raised:
+        litellm.image_edit(
+            model="azure_ai/FLUX.2-pro",
+            image=image,
+            prompt="Make it a watercolor",
+            api_key="test-key",
+            api_base="https://example.services.ai.azure.com",
+            client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond))),
+        )
+
+    assert raised.value.status_code == 400
+    assert sent_requests == []
+
+
 def test_flux2_pro_image_edit_bills_references_at_the_pro_megapixel_rate():
     pro_row: Final = litellm.model_cost["azure_ai/flux.2-pro"]
     response: Final = litellm.image_edit(

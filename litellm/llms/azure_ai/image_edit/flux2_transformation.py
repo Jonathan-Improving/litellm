@@ -141,6 +141,13 @@ class AzureFoundryFlux2ImageEditConfig(OpenAIImageEditConfig):
 
     def _read_image_bytes(self, model: str, image: FileTypes | Sequence[FileTypes]) -> bytes:
         if isinstance(image, bytes):
+            if len(image) == 0:
+                raise litellm.BadRequestError(
+                    message="FLUX.2 reference image passed as bytes is empty. Pass the image's bytes or a "
+                    "seekable file opened in binary mode",
+                    model=model,
+                    llm_provider="azure_ai",
+                )
             return image
         read: Final[object] = getattr(image, "read", None)
         if not callable(read):

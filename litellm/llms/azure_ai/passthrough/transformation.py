@@ -91,6 +91,7 @@ def relay_query_params(
 FOUNDRY_RELAY_SHAPES: Final = (
     RelayShape("/rerank", CallTypes.arerank, RerankResponse.model_validate),
     RelayShape("/providers/blackforestlabs/v1/flux-2-pro", CallTypes.aimage_generation, ImageResponse.model_validate),
+    RelayShape("/providers/blackforestlabs/v1/flux-2-flex", CallTypes.aimage_generation, ImageResponse.model_validate),
 )
 
 

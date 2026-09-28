@@ -545,6 +545,34 @@ def test_flux_2_relay_through_the_provider_route_is_costed_per_image():
     assert logging_obj._response_cost_calculator(result=result) == pytest.approx(per_image)
 
 
+def test_flux_2_flex_relay_through_the_provider_route_records_the_references_like_pro():
+    request_data = {
+        "prompt": "make it blue",
+        "input_image": _jpeg_b64(4032, 3024),
+        "input_image_2": _jpeg_b64(1024, 1024),
+    }
+    flex_result, flex_logging_obj = _relay_logging_result(
+        AzureAIPassthroughConfig(),
+        "FLUX.2-flex",
+        "providers/blackforestlabs/v1/flux-2-flex",
+        IMAGE_BODY,
+        request_data={"model": "FLUX.2-flex", **request_data},
+    )
+    pro_result, _ = _relay_logging_result(
+        AzureAIPassthroughConfig(),
+        "FLUX.2-pro",
+        "providers/blackforestlabs/v1/flux-2-pro",
+        IMAGE_BODY,
+        request_data={"model": "FLUX.2-pro", **request_data},
+    )
+
+    assert isinstance(flex_result, ImageResponse)
+    assert isinstance(pro_result, ImageResponse)
+    assert flex_logging_obj.call_type == "aimage_generation"
+    assert flex_result._hidden_params["reference_image_pixels"] == (4032 * 3024, 1024 * 1024)
+    assert flex_result._hidden_params["reference_image_pixels"] == pro_result._hidden_params["reference_image_pixels"]
+
+
 def _jpeg_b64(width: int, height: int, metadata_segments: int = 0) -> str:
     metadata = b"".join(b"\xff\xe2" + struct.pack(">H", 65_535) + b"\x00" * 65_533 for _ in range(metadata_segments))
     frame = b"\xff\xc0\x00\x11\x08" + struct.pack(">HH", height, width) + b"\x03\x01\x22\x00"
