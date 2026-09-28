@@ -74,7 +74,11 @@ from litellm.proxy._types import (
     ProxyException,
     UserAPIKeyAuth,
 )
-from litellm.proxy.auth.auth_utils import request_dispatched_to_pass_through_endpoint
+from litellm.proxy.auth.auth_utils import (
+    get_model_from_request,
+    get_request_route,
+    request_dispatched_to_pass_through_endpoint,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
@@ -100,6 +104,8 @@ from litellm.proxy.common_utils.sse_keepalive import (
 from litellm.proxy.litellm_pre_call_utils import (
     LiteLLMProxyRequestSetup,
     _get_dynamic_logging_metadata,  # pyright: ignore[reportPrivateUsage]  # shared proxy helper, same import style as _read_request_body above
+    _key_or_team_allows_client_pricing_override,  # pyright: ignore[reportPrivateUsage]  # reuse the proxy's pricing trust policy
+    _strip_client_pricing_overrides,  # pyright: ignore[reportPrivateUsage]  # sanitize before trusted hooks add guardrail costs
 )
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from litellm.proxy.utils import normalize_route_for_root_path
@@ -583,7 +589,18 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         """
         Filter out litellm params from the request body
         """
+        from litellm.proxy.proxy_server import llm_router
+
         _parsed_body = _parsed_body or {}
+        managed_model: Final = get_model_from_request(
+            request_data=_parsed_body,
+            route=get_request_route(request),
+            request_headers=request.headers,
+            request_query_params=request.query_params,
+            llm_router=llm_router,
+            request=request,
+            team_id=user_api_key_dict.team_id,
+        )
 
         litellm_keys_in_body: Final = MappingProxyType(
             {k: _parsed_body.pop(k) for k in types_utils.all_litellm_params if k in _parsed_body}
@@ -629,10 +646,19 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         # would attribute it to a budget the operator scoped to a LiteLLM model that
         # merely shares the name.
         if not request_dispatched_to_pass_through_endpoint(request):
+            _metadata["model_group"] = managed_model if isinstance(managed_model, str) else None
             _metadata["user_api_key_model_max_budget"] = user_api_key_dict.model_max_budget
             _metadata["user_api_key_team_model_max_budget"] = user_api_key_dict.team_model_max_budget
             _metadata["user_api_key_user_model_max_budget"] = user_api_key_dict.user_model_max_budget
             _metadata["user_api_key_end_user_model_max_budget"] = user_api_key_dict.end_user_model_max_budget
+        else:
+            for field in (
+                "user_api_key_model_max_budget",
+                "user_api_key_team_model_max_budget",
+                "user_api_key_user_model_max_budget",
+                "user_api_key_end_user_model_max_budget",
+            ):
+                _metadata.pop(field, None)
         _metadata.update(
             LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(user_api_key_dict=user_api_key_dict)
         )
@@ -1127,6 +1153,14 @@ async def pass_through_request(
             _parsed_body,
         )
 
+        if not _key_or_team_allows_client_pricing_override(user_api_key_dict):
+            _strip_client_pricing_overrides(_parsed_body)
+        if custom_llm_provider == "laya":
+            from litellm.llms.laya.common_utils import validate_laya_request
+
+            checkpoint: Final = validate_laya_request(_parsed_body)
+            _parsed_body["model"] = f"laya/{checkpoint}"
+
         ### COLLECT GUARDRAILS FOR PASSTHROUGH ENDPOINT ###
         # Passthrough endpoints are opt-in only for guardrails
         # When enabled, collect guardrails from org/team/key levels + passthrough-specific
@@ -1181,6 +1215,13 @@ async def pass_through_request(
             data=_parsed_body,
             call_type="pass_through_endpoint",
         )
+        if custom_llm_provider == "laya":
+            hook_model: Final = _parsed_body.get("model")
+            laya_body: Final = {
+                **_parsed_body,
+                "model": hook_model.removeprefix("laya/") if isinstance(hook_model, str) else hook_model,
+            }
+            _parsed_body = {**laya_body, "model": validate_laya_request(laya_body)}
         resolved_timeout: Final = resolve_pass_through_request_timeout(timeout)
         async_client_obj: Final = get_async_httpx_client(
             llm_provider=httpxSpecialProvider.PassThroughEndpoint,
@@ -2384,7 +2425,9 @@ async def websocket_passthrough_request(
     # with the existing _init_kwargs_for_pass_through_endpoint function
     class DummyRequest:
         def __init__(self, url: str, method: str = "WEBSOCKET", headers: dict | None = None):
-            self.url = url
+            self.url = httpx.URL(url)
+            self.scope = websocket.scope
+            self.query_params = websocket.query_params
             self.method = method
             self.headers = headers or {}
 

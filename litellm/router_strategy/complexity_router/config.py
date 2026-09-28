@@ -9,6 +9,7 @@ import math
 import re
 import warnings
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Final, Literal, NamedTuple
@@ -19,6 +20,7 @@ from pydantic import (
     Field,
     SkipValidation,
     StrictFloat,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_validator,
@@ -681,11 +683,12 @@ class CapabilityClassifierConfig(BaseModel):
 class JevClassifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    provider: Literal["typesafe", "laya"] = "typesafe"
     model: str = "jev-latest"
-    api_key: str | None = Field(default=None, description="TypeSafe API key, falling back to TYPESAFE_API_KEY")
+    api_key: str | None = Field(default=None, description="Provider API key; optional for self-hosted Laya")
     api_base: str | None = Field(
         default=None,
-        description="TypeSafe API base, falling back to TYPESAFE_API_BASE and then https://api.typesafe.ai",
+        description="Provider API base; defaults to TYPESAFE_API_BASE or LAYA_API_BASE for the selected provider",
     )
     timeout_ms: int = Field(default=3000, ge=1)
     instructions: str | None = Field(
@@ -711,12 +714,73 @@ class JevClassifierConfig(BaseModel):
 
     @model_validator(mode="after")
     def _keep_the_environment_key_on_the_environment_base(self) -> "JevClassifierConfig":
+        if self.provider == "laya":
+            from litellm.llms.laya.common_utils import validate_laya_api_base, validate_laya_model
+
+            _ = validate_laya_model(self.model)
+            if self.api_base is not None:
+                _ = validate_laya_api_base(self.api_base)
+            return self
         if self.api_base is not None and self.api_key is None:
             raise ValueError(
                 "jev_classifier_config.api_base requires jev_classifier_config.api_key: TYPESAFE_API_KEY is only sent "
                 "to TYPESAFE_API_BASE or https://api.typesafe.ai"
             )
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class ComplexityRouterConfigWrite:
+    submitted: Mapping[str, object] | None
+    effective: Mapping[str, object] | None
+
+    @property
+    def supplied_connection_fields(self) -> frozenset[str]:
+        classifier: Final = self.submitted.get("jev_classifier_config") if self.submitted is not None else None
+        return frozenset(
+            field for field in ("api_base", "api_key") if isinstance(classifier, Mapping) and field in classifier
+        )
+
+
+def resolve_complexity_router_config_write(
+    incoming: Mapping[str, object] | None, stored: Mapping[str, object] | None
+) -> ComplexityRouterConfigWrite:
+    if incoming is None:
+        return ComplexityRouterConfigWrite(submitted=None, effective=stored)
+    if stored is None or incoming.get("classifier_type") != "jev" or stored.get("classifier_type") != "jev":
+        return ComplexityRouterConfigWrite(submitted=incoming, effective=incoming)
+    incoming_classifier: Final = incoming.get("jev_classifier_config")
+    stored_classifier: Final = stored.get("jev_classifier_config")
+    if not isinstance(incoming_classifier, Mapping) or not isinstance(stored_classifier, Mapping):
+        return ComplexityRouterConfigWrite(submitted=incoming, effective=incoming)
+    existing: Final = TypeAdapter(dict[str, object]).validate_python(stored_classifier)
+    supplied: Final = TypeAdapter(dict[str, object]).validate_python(incoming_classifier)
+    classifier: Final = (
+        MappingProxyType({**supplied, "provider": existing["provider"]})
+        if "provider" not in supplied and "provider" in existing
+        else supplied
+    )
+    same_provider: Final = classifier.get("provider", "typesafe") == existing.get("provider", "typesafe")
+    same_base: Final = "api_base" not in classifier or (
+        classifier["api_base"] is not None and classifier["api_base"] == existing.get("api_base")
+    )
+    transport: Final = MappingProxyType(
+        {
+            key: value
+            for key, value in existing.items()
+            if same_provider and key in ("api_key", "api_base") and (key != "api_key" or same_base)
+        }
+    )
+    return ComplexityRouterConfigWrite(
+        submitted=MappingProxyType({**incoming, "jev_classifier_config": classifier}),
+        effective={  # mutable-ok: persisted JSON requires concrete nested dicts
+            **incoming,
+            "jev_classifier_config": {  # mutable-ok: json.dumps cannot serialize MappingProxyType
+                **transport,
+                **classifier,
+            },
+        },
+    )
 
 
 MAX_CUSTOM_PATTERN_REPEAT: Final[int] = 64
