@@ -185,9 +185,10 @@ def test_flux2_image_edit_preserves_controls_and_pixel_cost(dimensions: Mapping[
         steps="32",
         **dimensions,
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 2048 * 1024 * 2 + rate * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate * 4 + reference_rate)
 
 
 def test_flux2_image_edit_accepts_and_drops_openai_only_parameters():
@@ -224,8 +225,15 @@ def _webp(width: int, height: int) -> bytes:
     )
 
 
-def _flex_megapixel_rate() -> float:
-    return litellm.model_cost["azure_ai/FLUX.2-flex"]["input_cost_per_pixel"]
+MEGAPIXEL = 1024 * 1024
+
+
+def _flex_output_megapixel_rate() -> float:
+    return litellm.model_cost["azure_ai/FLUX.2-flex"]["output_cost_per_pixel"] * MEGAPIXEL
+
+
+def _flex_reference_megapixel_rate() -> float:
+    return litellm.model_cost["azure_ai/FLUX.2-flex"]["input_cost_per_pixel"] * MEGAPIXEL
 
 
 def _edit_ok(request: httpx.Request) -> httpx.Response:
@@ -249,12 +257,12 @@ def test_flux2_image_edit_measures_every_reference_but_bills_each_of_several_as_
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
     assert sent["input_image"] == base64.b64encode(references[0]).decode()
     assert sent["input_image_3"] == base64.b64encode(references[2]).decode()
     assert response._hidden_params["reference_image_pixels"] == (1024 * 1024, 800 * 600, 640 * 480)
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 3 * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(_flex_output_megapixel_rate() + reference_rate * 3)
 
 
 class _ReadOnlyUpload:
@@ -359,10 +367,11 @@ def test_flux2_image_edit_sends_and_bills_every_readable_upload(
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
     assert sent_images == [base64.b64encode(reference).decode()]
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 2 * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate + reference_rate * 2)
 
 
 @pytest.mark.parametrize("upload_kind", ("bytesio", "buffered-reader", "named-temporary-file-at-eof"))
@@ -427,10 +436,11 @@ def test_flux2_image_edit_measures_a_stream_reference():
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_edit_ok))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
     assert response._hidden_params["reference_image_pixels"] == (2048 * 2048,)
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 2048 * 2048)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate + reference_rate * 4)
 
 
 # Billable megapixels for a lone reference follow Azure's FLUX.2-pro request_meta as reported on 2026-09-25
@@ -453,10 +463,10 @@ def test_flux2_image_edit_bills_a_lone_reference_in_whole_megapixels(reference: 
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_edit_ok))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
 
     assert response._hidden_params["response_cost"] == pytest.approx(
-        rate * 1024 * 1024 + rate * billed_megapixels * 1024 * 1024
+        output_rate + _flex_reference_megapixel_rate() * billed_megapixels
     )
 
 
@@ -480,10 +490,11 @@ def test_flux2_image_edit_bills_a_lone_unmeasurable_reference_at_the_lone_refere
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_edit_ok))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
     assert response._hidden_params["reference_image_pixels"] == (None,)
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 4 * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate + reference_rate * 4)
     assert "Could not read the dimensions of the azure_ai/FLUX.2-flex reference image" in litellm_warnings.text
 
 
@@ -497,9 +508,10 @@ def test_flux2_image_edit_still_bills_every_reference_when_one_header_reports_ze
         client=HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_edit_ok))),
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 2 * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate + reference_rate * 2)
 
 
 @pytest.mark.parametrize("stream_position", ("start", "end"))
@@ -640,7 +652,9 @@ def test_flux2_pro_image_edit_bills_references_at_the_pro_megapixel_rate():
 
     assert pro_row["input_cost_per_pixel"] > 0
     assert response._hidden_params["response_cost"] == pytest.approx(
-        pro_row["output_cost_per_image"] + pro_row["input_cost_per_pixel"] * 2 * 1024 * 1024
+        pro_row["output_cost_per_image"]
+        + pro_row["output_cost_per_pixel"] * MEGAPIXEL
+        + pro_row["input_cost_per_pixel"] * 2 * MEGAPIXEL
     )
 
 
@@ -670,9 +684,7 @@ async def test_flux2_router_image_edit_bills_the_deployment_rates(monkeypatch: p
         size="1024x1280",
     )
 
-    assert response._hidden_params["response_cost"] == pytest.approx(
-        megapixel_rate * 2 * 1024 * 1024 + megapixel_rate * 2 * 1024 * 1024
-    )
+    assert response._hidden_params["response_cost"] == pytest.approx(megapixel_rate * 2 * MEGAPIXEL)
 
 
 @pytest.mark.parametrize(
@@ -682,15 +694,23 @@ async def test_flux2_router_image_edit_bills_the_deployment_rates(monkeypatch: p
         ({"input_cost_per_image": 0.5}, 0.5),
         (
             {"input_cost_per_pixel": 1e-07},
-            1e-07 * 2 * 1024 * 1024 + 1e-07 * 2 * 1024 * 1024,
+            1e-07 * 2 * MEGAPIXEL,
         ),
         (
             {"output_cost_per_image": 0.5, "input_cost_per_pixel": 1e-07},
-            0.5 + 1e-07 * 1024 * 1024 + 1e-07 * 2 * 1024 * 1024,
+            0.5 + 1e-07 * 2 * MEGAPIXEL,
         ),
+        ({"output_cost_per_image": 0.5, "output_cost_per_pixel": 1e-07}, 0.5 + 1e-07 * 2 * MEGAPIXEL),
         ({"input_cost_per_second": 0.001}, None),
     ),
-    ids=("flat", "flat-input-image-price", "per-pixel", "image-price-and-pixel-rate", "non-image-price-keeps-catalog"),
+    ids=(
+        "flat",
+        "flat-input-image-price",
+        "per-pixel",
+        "image-price-and-pixel-rate",
+        "image-price-and-output-pixel-rate",
+        "non-image-price-keeps-catalog",
+    ),
 )
 async def test_flux2_router_image_edit_bills_the_deployment_rates_with_a_logger_built_before_routing(
     monkeypatch: pytest.MonkeyPatch, deployment_prices: Mapping[str, float], expected_cost: float | None
@@ -724,7 +744,11 @@ async def test_flux2_router_image_edit_bills_the_deployment_rates_with_a_logger_
 
     response: Final = await router.aimage_edit(**routed_request, litellm_logging_obj=logging_obj)
     pro_row: Final = litellm.model_cost["azure_ai/flux.2-pro"]
-    catalog_cost: Final = pro_row["output_cost_per_image"] + pro_row["input_cost_per_pixel"] * 3 * 1024 * 1024
+    catalog_cost: Final = (
+        pro_row["output_cost_per_image"]
+        + pro_row["output_cost_per_pixel"] * 2 * MEGAPIXEL
+        + pro_row["input_cost_per_pixel"] * 2 * MEGAPIXEL
+    )
 
     assert response._hidden_params["response_cost"] == pytest.approx(
         catalog_cost if expected_cost is None else expected_cost
@@ -770,8 +794,8 @@ def test_flux2_image_edit_bills_the_generated_image_azure_returned(size: str | N
 
     assert response._hidden_params["response_cost"] == pytest.approx(
         pro_row["output_cost_per_image"]
-        + pro_row["input_cost_per_pixel"] * 1024 * 1024
-        + pro_row["input_cost_per_pixel"] * 2 * 1024 * 1024
+        + pro_row["output_cost_per_pixel"] * 2 * MEGAPIXEL
+        + pro_row["input_cost_per_pixel"] * 2 * MEGAPIXEL
     )
 
 
@@ -787,10 +811,11 @@ async def test_flux2_aimage_edit_bills_references_like_image_edit():
         client=client,
         size="1024x1024",
     )
-    rate: Final = _flex_megapixel_rate()
+    output_rate: Final = _flex_output_megapixel_rate()
+    reference_rate: Final = _flex_reference_megapixel_rate()
 
     assert response._hidden_params["reference_image_pixels"] == (1024 * 1024, 1024 * 1024)
-    assert response._hidden_params["response_cost"] == pytest.approx(rate * 1024 * 1024 + rate * 2 * 1024 * 1024)
+    assert response._hidden_params["response_cost"] == pytest.approx(output_rate + reference_rate * 2)
 
 
 async def test_concurrent_flux2_image_edits_each_bill_their_own_references():

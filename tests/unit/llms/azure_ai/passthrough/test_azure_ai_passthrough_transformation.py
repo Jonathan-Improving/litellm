@@ -17,6 +17,7 @@ from litellm.types.utils import EmbeddingResponse, ImageResponse, LlmProviders, 
 from litellm.utils import ProviderConfigManager
 
 FOUNDRY_BASE = "https://my-resource.services.ai.azure.com"
+MEGAPIXEL = 1024 * 1024
 RESPONSES_COMPLETED_EVENT = {
     "type": "response.completed",
     "sequence_number": 2,
@@ -526,23 +527,25 @@ def test_image_generation_relay_is_costed_per_image():
     result, logging_obj = _relay_logging_result(
         AzureAIPassthroughConfig(), "FLUX.2-pro", "openai/deployments/FLUX.2-pro/images/generations", IMAGE_BODY
     )
-    per_image = litellm.get_model_info("azure_ai/FLUX.2-pro")["output_cost_per_image"]
+    row = litellm.get_model_info("azure_ai/FLUX.2-pro")
+    expected_cost = row["output_cost_per_image"] + row["output_cost_per_pixel"] * MEGAPIXEL
 
     assert isinstance(result, ImageResponse)
     assert logging_obj.call_type == "aimage_generation"
-    assert per_image > 0
-    assert logging_obj._response_cost_calculator(result=result) == pytest.approx(per_image)
+    assert row["output_cost_per_image"] > 0
+    assert logging_obj._response_cost_calculator(result=result) == pytest.approx(expected_cost)
 
 
 def test_flux_2_relay_through_the_provider_route_is_costed_per_image():
     result, logging_obj = _relay_logging_result(
         AzureAIPassthroughConfig(), "FLUX.2-pro", "providers/blackforestlabs/v1/flux-2-pro", IMAGE_BODY
     )
-    per_image = litellm.get_model_info("azure_ai/FLUX.2-pro")["output_cost_per_image"]
+    row = litellm.get_model_info("azure_ai/FLUX.2-pro")
+    expected_cost = row["output_cost_per_image"] + row["output_cost_per_pixel"] * MEGAPIXEL
 
     assert isinstance(result, ImageResponse)
     assert logging_obj.call_type == "aimage_generation"
-    assert logging_obj._response_cost_calculator(result=result) == pytest.approx(per_image)
+    assert logging_obj._response_cost_calculator(result=result) == pytest.approx(expected_cost)
 
 
 def test_flux_2_flex_relay_through_the_provider_route_records_the_references_like_pro():
@@ -637,12 +640,15 @@ def test_flux_2_relay_through_the_provider_route_bills_the_references_in_the_req
         IMAGE_BODY,
         request_data={"model": "FLUX.2-pro", "prompt": "make it blue", **references},
     )
-    pro_row = litellm.get_model_info("azure_ai/FLUX.2-pro")
-    megapixel_rate = litellm.model_cost["azure_ai/flux.2-pro"]["input_cost_per_pixel"] * 1024 * 1024
+    pro_row = litellm.model_cost["azure_ai/flux.2-pro"]
+    output_megapixel_rate = pro_row["output_cost_per_pixel"] * MEGAPIXEL
+    reference_megapixel_rate = pro_row["input_cost_per_pixel"] * MEGAPIXEL
 
     assert isinstance(result, ImageResponse)
     assert logging_obj._response_cost_calculator(result=result) == pytest.approx(
-        pro_row["output_cost_per_image"] + megapixel_rate * billed_reference_megapixels
+        pro_row["output_cost_per_image"]
+        + output_megapixel_rate
+        + reference_megapixel_rate * billed_reference_megapixels
     )
 
 

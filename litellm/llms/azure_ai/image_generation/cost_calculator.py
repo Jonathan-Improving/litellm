@@ -22,14 +22,21 @@ MAX_LONE_REFERENCE_MEGAPIXELS: Final = 4
 IMAGE_HEADER_BASE64_PREFIX_CHARS: Final = 64 * 1024
 JPEG_HEADER_BASE64_PREFIX_CHARS: Final = 512 * 1024
 REFERENCE_IMAGE_PIXELS_HIDDEN_PARAM: Final = "reference_image_pixels"
-DEPLOYMENT_PER_IMAGE_PRICE_KEYS: Final = ("output_cost_per_image", "input_cost_per_image")
+FLUX2_PRICE_KEYS: Final = (
+    "output_cost_per_image",
+    "output_cost_per_pixel",
+    "input_cost_per_image",
+    "input_cost_per_pixel",
+)
 _REFERENCE_PIXELS: Final = TypeAdapter(tuple[Annotated[int, Field(strict=True, gt=0)] | None, ...])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _Flux2MegapixelPrices:
-    first_megapixel: float
-    additional_megapixel: float
+class _Flux2Prices:
+    generated_image: float
+    generated_megapixel: float
+    reference_image: float
+    reference_megapixel: float
 
 
 def _price(resolved: ModelInfo, cost_key: str) -> float | None:
@@ -53,30 +60,18 @@ def _deployment_price(deployment: ModelInfo | None, cost_key: str) -> float | No
     return _get_cost_per_unit(deployment, cost_key, default_value=None)
 
 
-def _flux2_prices(resolved: ModelInfo, deployment: ModelInfo | None) -> _Flux2MegapixelPrices:
-    deployment_image_price: Final = next(
-        (price for key in DEPLOYMENT_PER_IMAGE_PRICE_KEYS if (price := _deployment_price(deployment, key)) is not None),
-        None,
+def _flux2_prices(resolved: ModelInfo, deployment: ModelInfo | None) -> _Flux2Prices:
+    deployment_prices: Final = {key: _deployment_price(deployment, key) for key in FLUX2_PRICE_KEYS}
+    prices: Final = (
+        deployment_prices
+        if any(price is not None for price in deployment_prices.values())
+        else {key: _price(resolved, key) for key in FLUX2_PRICE_KEYS}
     )
-    deployment_pixel_rate: Final = _deployment_price(deployment, "input_cost_per_pixel")
-    deployment_megapixel_rate: Final = None if deployment_pixel_rate is None else deployment_pixel_rate * MEGAPIXEL
-    match (deployment_image_price, deployment_megapixel_rate):
-        case (float() as image_price, float() as megapixel_rate):
-            return _Flux2MegapixelPrices(first_megapixel=image_price, additional_megapixel=megapixel_rate)
-        case (float() as image_price, None):
-            return _Flux2MegapixelPrices(first_megapixel=image_price, additional_megapixel=0.0)
-        case (None, float() as megapixel_rate):
-            return _Flux2MegapixelPrices(first_megapixel=megapixel_rate, additional_megapixel=megapixel_rate)
-        case _:
-            return _catalog_flux2_prices(resolved)
-
-
-def _catalog_flux2_prices(resolved: ModelInfo) -> _Flux2MegapixelPrices:
-    catalog_megapixel_rate: Final = _pixel_rate(resolved) * MEGAPIXEL
-    catalog_first_megapixel: Final = _price(resolved, "output_cost_per_image")
-    return _Flux2MegapixelPrices(
-        first_megapixel=catalog_megapixel_rate if catalog_first_megapixel is None else catalog_first_megapixel,
-        additional_megapixel=catalog_megapixel_rate,
+    return _Flux2Prices(
+        generated_image=prices["output_cost_per_image"] or 0.0,
+        generated_megapixel=(prices["output_cost_per_pixel"] or 0.0) * MEGAPIXEL,
+        reference_image=prices["input_cost_per_image"] or 0.0,
+        reference_megapixel=(prices["input_cost_per_pixel"] or 0.0) * MEGAPIXEL,
     )
 
 
@@ -107,7 +102,7 @@ def _billable_reference_megapixels(model: str, reference_pixels: tuple[int | Non
             return len(reference_pixels)
 
 
-def _reference_cost(model: str, prices: _Flux2MegapixelPrices, image_response: ImageResponse) -> float:
+def _reference_cost(model: str, prices: _Flux2Prices, image_response: ImageResponse) -> float:
     reported_pixels: Final = image_response._hidden_params.get(REFERENCE_IMAGE_PIXELS_HIDDEN_PARAM)
     if reported_pixels is None:
         return 0.0
@@ -116,14 +111,16 @@ def _reference_cost(model: str, prices: _Flux2MegapixelPrices, image_response: I
     except ValidationError:
         verbose_logger.warning("Ignoring malformed FLUX.2 reference pixel counts: %r", reported_pixels)
         return 0.0
-    return prices.additional_megapixel * _billable_reference_megapixels(model, reference_pixels)
+    return prices.reference_image * len(reference_pixels) + prices.reference_megapixel * _billable_reference_megapixels(
+        model, reference_pixels
+    )
 
 
 def _flux2_generated_cost(
-    model: str, prices: _Flux2MegapixelPrices, image_response: ImageResponse, requested_pixels: int, n: int | None
+    model: str, prices: _Flux2Prices, image_response: ImageResponse, requested_pixels: int, n: int | None
 ) -> float:
     return sum(
-        prices.first_megapixel + prices.additional_megapixel * (_billable_megapixels(pixels) - 1)
+        prices.generated_image + prices.generated_megapixel * _billable_megapixels(pixels)
         for pixels in _generated_pixels(model, image_response, requested_pixels, n)
     )
 
