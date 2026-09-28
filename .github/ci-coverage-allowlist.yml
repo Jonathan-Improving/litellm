@@ -101,4 +101,11 @@ test_paths:
       - tests/integration/test_oci_integration.py
       - tests/integration/test_oci_proxy_integration.py
 
-dockerfiles: []
+dockerfiles:
+  - reason: >-
+      The Rust gateway image compiles the whole workspace in release mode, which is too slow for
+      a per-pull-request job while the gateway binary is still being assembled; the Rust lint,
+      clippy, and compile jobs already cover the code it packages. Revisit when the gateway is
+      published
+    paths:
+      - litellm-rust/crates/gateway/Dockerfile
