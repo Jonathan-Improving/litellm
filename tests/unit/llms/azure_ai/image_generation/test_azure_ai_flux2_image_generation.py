@@ -1,4 +1,5 @@
 import base64
+import logging
 import struct
 from collections.abc import Callable, Mapping
 from typing import Final
@@ -345,6 +346,39 @@ def test_flux2_generation_bills_each_price_source_as_its_owner_set_it(
     )
 
     assert cost == pytest.approx(_catalog_image_cost(model, megapixels) if expected is None else expected(megapixels))
+
+
+def test_flux2_deployment_reference_only_pricing_warns_about_free_generated_images(
+    caplog: pytest.LogCaptureFixture,
+):
+    response: Final = ImageResponse(data=[ImageObject(url="https://example.com/image.png")])
+
+    with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+        reference_only_cost: Final = CostCalculatorUtils.route_image_generation_cost_calculator(
+            model="flux.2-pro",
+            completion_response=response,
+            custom_llm_provider="azure_ai",
+            size="1024x1024",
+            call_type="image_generation",
+            model_info={"input_cost_per_pixel": 1e-07},
+        )
+
+    assert reference_only_cost == 0.0
+    assert "output_cost_per_image" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+        generated_pixel_cost: Final = CostCalculatorUtils.route_image_generation_cost_calculator(
+            model="flux.2-pro",
+            completion_response=response,
+            custom_llm_provider="azure_ai",
+            size="1024x1024",
+            call_type="image_generation",
+            model_info={"output_cost_per_pixel": 1e-07},
+        )
+
+    assert generated_pixel_cost == pytest.approx(1e-07 * MEGAPIXEL)
+    assert "output_cost_per_image" not in caplog.text
 
 
 @pytest.mark.parametrize("model", ("flux.2-pro", "FLUX.2-flex"))

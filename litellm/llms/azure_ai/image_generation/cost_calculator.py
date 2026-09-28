@@ -60,13 +60,21 @@ def _deployment_price(deployment: ModelInfo | None, cost_key: str) -> float | No
     return _get_cost_per_unit(deployment, cost_key, default_value=None)
 
 
-def _flux2_prices(resolved: ModelInfo, deployment: ModelInfo | None) -> _Flux2Prices:
+def _warn_missing_output_price(model: str, deployment_prices: Mapping[str, float | None]) -> None:
+    if deployment_prices["output_cost_per_image"] is None and deployment_prices["output_cost_per_pixel"] is None:
+        verbose_logger.warning(
+            "%s deployment prices reference images but not generated images, logging generated images at $0. "
+            "Set output_cost_per_image or output_cost_per_pixel",
+            model,
+        )
+
+
+def _flux2_prices(model: str, resolved: ModelInfo, deployment: ModelInfo | None) -> _Flux2Prices:
     deployment_prices: Final = {key: _deployment_price(deployment, key) for key in FLUX2_PRICE_KEYS}
-    prices: Final = (
-        deployment_prices
-        if any(price is not None for price in deployment_prices.values())
-        else {key: _price(resolved, key) for key in FLUX2_PRICE_KEYS}
-    )
+    deployment_priced: Final = any(price is not None for price in deployment_prices.values())
+    if deployment_priced:
+        _warn_missing_output_price(model, deployment_prices)
+    prices: Final = deployment_prices if deployment_priced else {key: _price(resolved, key) for key in FLUX2_PRICE_KEYS}
     return _Flux2Prices(
         generated_image=prices["output_cost_per_image"] or 0.0,
         generated_megapixel=(prices["output_cost_per_pixel"] or 0.0) * MEGAPIXEL,
@@ -194,7 +202,7 @@ def cost_calculator(
             return token_based_cost
 
         if AzureFoundryFluxImageGenerationConfig.is_flux2_model(model):
-            prices: Final = _flux2_prices(_model_info, model_info)
+            prices: Final = _flux2_prices(model, _model_info, model_info)
             requested_pixels: Final = _size_pixels(_output_size(size, optional_params, image_response)) or MEGAPIXEL
             return _flux2_generated_cost(model, prices, image_response, requested_pixels, n) + _reference_cost(
                 model, prices, image_response
