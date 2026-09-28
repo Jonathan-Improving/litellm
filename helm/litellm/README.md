@@ -66,7 +66,7 @@ The `litellm-helm` chart (`oci://ghcr.io/berriai/litellm-helm`) is retired; its 
 | `proxy_config` | `gateway.config.proxy_config` |
 | `proxyConfigMap.create: false` + `proxyConfigMap.name` | `gateway.config.create: false` and mount your ConfigMap with `gateway.volumes` / `gateway.volumeMounts`, or pass `--config` in `monolith.extraArgs` |
 | `masterkeySecretName` / `masterkeySecretKey` | `masterKey.secretName` / `masterKey.secretKey` |
-| `masterkeySecretName: ""` (auto generated Secret) | `masterKey.generate: true` with `masterKey.secretName: ""` |
+| `masterkeySecretName: ""` (auto generated Secret) | `masterKey.generate: true` with `masterKey.secretName: ""` (creates a new key; copy the old key first, see below, to keep existing credentials valid) |
 | `db.useExisting`, `db.endpoint`, `db.database`, `db.secret.*` | `database.writer.host`, `database.writer.port`, `database.writer.dbname`, `database.writer.passwordSecret.*` |
 | `db.readReplicaUrl` / `db.secret.readReplica*` | `database.reader.*` |
 | `db.connectionPool.*` | `database.connectionPool.*` |
@@ -130,4 +130,11 @@ gateway:
     - litellm-provider-keys
 ```
 
-The monolith Service keeps the `<release>-litellm` name the old chart produced through its `nameOverride: "litellm"` default, so an existing Ingress or port-forward keeps working after `helm uninstall` of the old release and `helm install` of this one. The generated master key Secret has `helm.sh/resource-policy: keep` and is reused across upgrades through `lookup`, matching the old chart
+The monolith Service keeps the `<release>-litellm` name the old chart produced through its `nameOverride: "litellm"` default, so an existing Ingress or port-forward keeps working after `helm uninstall` of the old release and `helm install` of this one. The generated Secret in this chart has `helm.sh/resource-policy: keep` and is reused across upgrades of this chart. The retired chart stored its generated key under a different Secret and data key, and `helm uninstall` deletes that Secret, so copy it into a Secret you own before uninstalling the old release to keep existing credentials valid, for example:
+
+```bash
+kubectl create secret generic litellm-master-key-secret \
+  --from-literal=master-key="$(kubectl get secret <release>-litellm-masterkey -o jsonpath='{.data.masterkey}' | base64 -d)"
+```
+
+Then set `masterKey.secretName: litellm-master-key-secret`, as in the minimal example above. Releases that set `masterkeySecretName` already point `masterKey.secretName` and `masterKey.secretKey` at that Secret
