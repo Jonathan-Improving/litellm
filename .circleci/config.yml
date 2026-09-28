@@ -2474,6 +2474,7 @@ jobs:
             export LITELLM_DANGEROUSLY_PERMIT_WEAK_OR_UNSET_MASTER_KEY=true
             export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/circle_test
             export LITELLM_MASTER_KEY="sk-1234"
+            export LITELLM_LICENSE="bad-license"
             export FAKE_OPENAI_API_BASE=http://localhost:8190
             export OTEL_EXPORTER="in_memory"
             export USE_DDTRACE=True
