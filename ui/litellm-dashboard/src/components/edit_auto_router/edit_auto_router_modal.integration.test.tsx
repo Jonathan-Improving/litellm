@@ -35,7 +35,9 @@ vi.mock("../networking", () => ({
   validateAutoRouterConfig,
 }));
 
-vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({ default: () => ({ accessToken: "sk-test" }) }));
+vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
+  default: () => ({ accessToken: "sk-test", userRole: "Admin", isViewOnly: false }),
+}));
 
 vi.mock("@/components/llm_calls/fetch_models", () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue([{ model_group: "gpt-4o-mini" }]),
@@ -59,6 +61,24 @@ const MODEL_DATA = {
     complexity_router_config: STORED_CONFIG,
   },
   model_info: { id: "auto-1", access_groups: [] },
+};
+
+const LAYA_MODEL_DATA = {
+  ...MODEL_DATA,
+  litellm_params: {
+    ...MODEL_DATA.litellm_params,
+    complexity_router_config: {
+      ...STORED_CONFIG,
+      classifier_type: "jev",
+      jev_classifier_config: {
+        provider: "laya",
+        model: "english",
+        timeout_ms: 3000,
+        api_base: "https://laya.test",
+        api_key: "masked-key",
+      },
+    },
+  },
 };
 
 const renderModal = (props: Partial<React.ComponentProps<typeof EditAutoRouterModal>> = {}) =>
@@ -127,6 +147,112 @@ describe("EditAutoRouterModal keyword matching", () => {
       expect.objectContaining({ deployment_affinity: false }),
       "team-1",
     );
+  });
+
+  it.each([
+    { intent: "untouched", action: undefined, transport: {} },
+    { intent: "discarded replacement", action: undefined, discardReplacement: true, transport: {} },
+    { intent: "gateway reset", action: "Use gateway connection", transport: { api_base: null, api_key: null } },
+    { intent: "key reset", action: "Clear saved API key", transport: { api_key: null } },
+    {
+      intent: "key reset after discarded replacement",
+      action: "Clear saved API key",
+      discardReplacement: true,
+      transport: { api_key: null },
+    },
+    {
+      intent: "gateway reset after discarded replacements",
+      action: "Use gateway connection",
+      discardReplacement: true,
+      transport: { api_base: null, api_key: null },
+    },
+  ])("saves Laya connection intent: $intent", async ({ action, transport, discardReplacement }) => {
+    const user = userEvent.setup();
+    renderModal({ modelData: LAYA_MODEL_DATA });
+    openAutoRouterAdvanced("Classification Method");
+    await user.click(screen.getByText("Connection settings"));
+    expect(screen.getByLabelText("API Base")).toHaveValue("");
+    expect(screen.getByLabelText("API Key")).toHaveValue("");
+    if (action) await user.click(screen.getByRole("button", { name: action }));
+    if (discardReplacement) {
+      fireEvent.change(screen.getByLabelText("API Base"), { target: { value: "https://temporary.test" } });
+      fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "discarded-new-key" } });
+      fireEvent.change(screen.getByLabelText("API Base"), { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "  " } });
+    }
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(modelPatchUpdateCall).toHaveBeenCalledOnce());
+    const expectedConfig = { provider: "laya", model: "english", timeout_ms: 3000, ...transport };
+    expect(savedConfig().jev_classifier_config).toEqual(expectedConfig);
+  });
+
+  it.each(["reopen", "different router"])("discards pending connection resets on %s", async (mode) => {
+    const user = userEvent.setup();
+    const props = {
+      onCancel: vi.fn(),
+      onSuccess: vi.fn(),
+      modelData: LAYA_MODEL_DATA,
+      accessToken: "token",
+      userRole: "Admin",
+    };
+    const { rerender } = renderWithProviders(<EditAutoRouterModal {...props} isVisible />);
+    openAutoRouterAdvanced("Classification Method");
+    await user.click(screen.getByText("Connection settings"));
+    await user.click(screen.getByRole("button", { name: "Use gateway connection" }));
+    expect(screen.getByText("Saved API key will be cleared on the next save")).toBeVisible();
+    const reopenedModel =
+      mode === "reopen"
+        ? LAYA_MODEL_DATA
+        : { ...LAYA_MODEL_DATA, model_info: { ...LAYA_MODEL_DATA.model_info, id: "another-router" } };
+    if (mode === "reopen") rerender(<EditAutoRouterModal {...props} isVisible={false} />);
+    rerender(<EditAutoRouterModal {...props} modelData={reopenedModel} isVisible />);
+    expect(screen.queryByText("Saved API key will be cleared on the next save")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(modelPatchUpdateCall).toHaveBeenCalledOnce());
+    expect(savedConfig().jev_classifier_config).toEqual({ provider: "laya", model: "english", timeout_ms: 3000 });
+  });
+
+  it("keeps a newly entered classifier key when correcting the API base before saving", async () => {
+    const user = userEvent.setup();
+    renderModal({
+      modelData: {
+        ...MODEL_DATA,
+        litellm_params: {
+          ...MODEL_DATA.litellm_params,
+          complexity_router_config: {
+            ...STORED_CONFIG,
+            classifier_type: "jev",
+            jev_classifier_config: {
+              provider: "laya",
+              model: "english",
+              timeout_ms: 3000,
+              api_base: "https://old-laya.test",
+              api_key: "masked-saved-key",
+            },
+          },
+        },
+      },
+    });
+    openAutoRouterAdvanced("Classification Method");
+    await user.click(screen.getByText("Connection settings"));
+    expect(screen.getByLabelText("API Key")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "newly-entered-key" } });
+    fireEvent.change(screen.getByLabelText("API Base"), { target: { value: "https://new-laya.typo" } });
+    fireEvent.change(screen.getByLabelText("API Base"), { target: { value: "https://new-laya.test" } });
+    expect(screen.getByLabelText("API Key")).toHaveValue("newly-entered-key");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(modelPatchUpdateCall).toHaveBeenCalledOnce());
+    const expectedConfig = {
+      provider: "laya",
+      model: "english",
+      timeout_ms: 3000,
+      api_base: "https://new-laya.test",
+      api_key: "newly-entered-key",
+    };
+    expect(savedConfig().jev_classifier_config).toEqual(expectedConfig);
   });
 
   it("renders the advanced sections the create form offers", async () => {
