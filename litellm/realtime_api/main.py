@@ -37,6 +37,7 @@ from ..llms.azure.common_utils import get_azure_ad_token
 from ..llms.azure.realtime.handler import AzureOpenAIRealtime, azure_realtime_protocol_for_client
 from ..llms.bedrock.realtime.handler import BedrockRealtime
 from ..llms.custom_httpx.http_handler import get_shared_realtime_ssl_context
+from ..llms.openai.live.handler import OpenAILiveSessions
 from ..llms.openai.realtime.handler import OpenAIRealtime
 from ..llms.vertex_ai.audio_transcription.realtime_transformation import is_vertex_speech_to_text_model
 from ..llms.vertex_ai.realtime.transformation import VertexAIRealtimeConfig, vertex_realtime_config
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
 
 azure_realtime: Final = AzureOpenAIRealtime()
 openai_realtime: Final = OpenAIRealtime()
+openai_live_sessions: Final = OpenAILiveSessions()
 bedrock_realtime: Final = BedrockRealtime()
 xai_realtime: Final = XAIRealtime()
 vertex_llm_base: Final = VertexBase()
@@ -356,6 +358,7 @@ async def _arealtime(
     client: object | None = None,
     timeout: float | None = None,
     query_params: RealtimeQueryParams | None = None,
+    live_session_start: Mapping[str, object] | None = None,
     **kwargs,
 ):
     """
@@ -397,6 +400,48 @@ async def _arealtime(
         litellm_params=litellm_params_dict,
         custom_llm_provider=_custom_llm_provider,
     )
+
+    if live_session_start is not None:
+        if _custom_llm_provider != "openai":
+            raise ValueError(f"OpenAI Live sessions require the openai provider, got {_custom_llm_provider}")
+        from litellm.integrations.custom_guardrail import CustomGuardrail
+        from litellm.types.guardrails import GuardrailEventHooks
+
+        realtime_guardrail_event_hooks: Final = (
+            GuardrailEventHooks.realtime_input_transcription,
+            GuardrailEventHooks.pre_call,
+            GuardrailEventHooks.post_call,
+        )
+        realtime_guardrail_request_data: Final = {
+            "litellm_metadata": _build_litellm_metadata(kwargs) or {},
+        }
+        if any(
+            isinstance(callback, CustomGuardrail)
+            and any(
+                callback.should_run_guardrail(
+                    data=realtime_guardrail_request_data,
+                    event_type=event_hook,
+                )
+                for event_hook in realtime_guardrail_event_hooks
+            )
+            for callback in litellm.callbacks
+        ):
+            raise ValueError("Guardrails are not supported on OpenAI Live sessions")
+        live_api_base: Final = (
+            dynamic_api_base or litellm_params.api_base or litellm.api_base or "https://api.openai.com/"
+        )
+        live_api_key: Final = (
+            dynamic_api_key or litellm.api_key or litellm.openai_key or get_secret_str("OPENAI_API_KEY")
+        )
+        await openai_live_sessions.async_live_session(
+            model=model,
+            websocket=websocket,
+            logging_obj=litellm_logging_obj,
+            session_start=live_session_start,
+            api_base=live_api_base,
+            api_key=live_api_key,
+        )
+        return
 
     provider_config: BaseRealtimeConfig | None = None
     if _custom_llm_provider in LlmProviders._member_map_.values():
