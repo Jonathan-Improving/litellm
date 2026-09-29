@@ -9454,6 +9454,7 @@ async def test_managed_jwt_cannot_be_downgraded_into_virtual_key_mapping(monkeyp
     from typing import Final
 
     from litellm.proxy import proxy_server
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
     from litellm.types.agents import AgentResponse
     from litellm.types.proxy.agent_identity import AgentIdentityBinding
 
@@ -9477,16 +9478,18 @@ async def test_managed_jwt_cannot_be_downgraded_into_virtual_key_mapping(monkeyp
     for name, value in {
         **_proxy_attrs_for_centralized_checks(),
         "general_settings": {"enable_jwt_auth": True}, "premium_user": True,
-        "prisma_client": client, "jwt_handler": handler, "user_api_key_cache": DualCache(),
+        "prisma_client": client, "jwt_handler": handler, "user_api_key_cache": UserApiKeyCache(),
         "proxy_logging_obj": MagicMock(post_call_failure_hook=AsyncMock(return_value=None)),
     }.items():
         monkeypatch.setattr(proxy_server, name, value)
-    with pytest.raises(ProxyException) as failure:
-        await _user_api_key_auth_builder(
-            request=_alias_request("/v1/chat/completions", {}), api_key="Bearer verified.jwt.token",
-            azure_api_key_header="", anthropic_api_key_header=None, google_ai_studio_api_key_header=None,
-            azure_apim_header=None, request_data={},
-        )
-    assert failure.value.code == "403"
-    assert "without virtual-key mapping" in failure.value.message
-    client.writer_db.litellm_agentstable.find_unique.assert_awaited_once()
+    for _ in range(2):
+        with pytest.raises(ProxyException) as failure:
+            await _user_api_key_auth_builder(
+                request=_alias_request("/v1/chat/completions", {}), api_key="Bearer verified.jwt.token",
+                azure_api_key_header="", anthropic_api_key_header=None, google_ai_studio_api_key_header=None,
+                azure_apim_header=None, request_data={},
+            )
+        assert failure.value.code == "403"
+        assert "without virtual-key mapping" in failure.value.message
+    client.writer_db.litellm_agentidentity.find_unique.assert_awaited_once()
+    assert client.writer_db.litellm_agentstable.find_unique.await_count == 2

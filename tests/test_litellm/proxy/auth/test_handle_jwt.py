@@ -8055,6 +8055,52 @@ def test_managed_issuer_requires_configured_audience_validation(
 
 
 @pytest.mark.asyncio
+async def test_managed_jwt_reuses_binding_lookup_but_rechecks_disabled_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
+    from litellm.types.proxy.agent_identity import AgentIdentityBinding
+
+    issuer: Final = "https://login.microsoftonline.com/tenant/v2.0"
+    jwks_url: Final = "https://identity.example/managed-jwks"
+    private_key, jwk = _get_rsa_key_and_jwk("managed-cache")
+    cache: Final = UserApiKeyCache()
+    cache.set_cache(f"litellm_jwt_auth_keys_{jwks_url}", [jwk])
+    monkeypatch.setenv("JWT_PUBLIC_KEY_URL", jwks_url)
+    monkeypatch.setenv("JWT_ISSUER", issuer)
+    monkeypatch.setenv("JWT_AUDIENCE", "gateway")
+    binding: Final = AgentIdentityBinding(
+        agent_id="managed", provider="microsoft_entra", issuer=issuer, tenant_id="tenant",
+        client_id="client", service_principal_id="principal", revision="current",
+    )
+    agent: Final = AgentResponse(
+        agent_id="managed", agent_name="Managed", agent_card_params={}, identity_managed=True, identity=binding,
+    )
+    database: Final = MagicMock()
+    database.writer_db.litellm_agentidentity.find_unique = AsyncMock(return_value=binding)
+    database.writer_db.litellm_agentidentity.update_many = AsyncMock(return_value=1)
+    database.writer_db.litellm_agentstable.find_unique = AsyncMock(return_value=agent)
+    handler: Final = JWTHandler()
+    handler.update_environment(database, cache, LiteLLM_JWTAuth())
+    token: Final = _encode_rsa_jwt(
+        private_key, issuer, "gateway", "managed-cache", {"tid": "tenant", "azp": "client", "oid": "principal"}
+    )
+    arguments: Final = dict(
+        api_key=token, jwt_handler=handler, request_data={}, general_settings={}, route="/chat/completions",
+        prisma_client=database, user_api_key_cache=cache, parent_otel_span=None, proxy_logging_obj=MagicMock(),
+    )
+    for _ in range(2):
+        result: Final = await JWTAuthManager.authorize_jwt(**arguments)
+        assert result["agent_id"] == "managed"
+    database.writer_db.litellm_agentidentity.find_unique.assert_awaited_once()
+    assert database.writer_db.litellm_agentstable.find_unique.await_count == 2
+    assert database.writer_db.litellm_agentidentity.update_many.await_count == 2
+    database.writer_db.litellm_agentstable.find_unique.return_value = agent.model_copy(update={"enabled": False})
+    with pytest.raises(HTTPException) as denied:
+        await JWTAuthManager.authorize_jwt(**arguments)
+    assert denied.value.status_code == 403
+    assert database.writer_db.litellm_agentidentity.update_many.await_count == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "team_route_allowed,team_claim,db_fallback",
     [

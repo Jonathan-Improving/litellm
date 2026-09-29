@@ -2502,7 +2502,7 @@ class JWTAuthManager:
         """Resolve and authorize JWT context; only normal admission supplies provisioning."""
         handler: Final = jwt_handler
         jwt_valid_token: Final = await JWTAuthManager.authenticate_jwt(api_key, handler)
-        managed: Final = await resolve_managed_agent(jwt_valid_token, prisma_client)
+        managed: Final = await resolve_managed_agent(jwt_valid_token, prisma_client, cache=user_api_key_cache)
         if managed is not None:
             if not handler.managed_issuer_is_trusted(jwt_valid_token.get("iss")):
                 raise HTTPException(403, "Managed agents require trusted JWT issuer and audience validation")

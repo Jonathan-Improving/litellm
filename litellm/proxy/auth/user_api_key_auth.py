@@ -1657,7 +1657,10 @@ async def _user_api_key_auth_builder(
 
                     from litellm.proxy.agent_endpoints.identity_store import resolve_managed_agent
 
-                    if jwt_claims and await resolve_managed_agent(jwt_claims, prisma_client) is not None:
+                    if (
+                        jwt_claims
+                        and await resolve_managed_agent(jwt_claims, prisma_client, cache=user_api_key_cache) is not None
+                    ):
                         raise HTTPException(
                             403, "Managed agents require direct JWT authentication without virtual-key mapping"
                         )
