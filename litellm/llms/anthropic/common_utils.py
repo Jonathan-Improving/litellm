@@ -333,8 +333,7 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         match thinking:
             case {"type": "adaptive" | "enabled", "display": "updates"}:
                 return True
-            case _:
-                return False
+        return False
 
     def is_mid_conversation_output_config_used(self, messages: list[AllMessageValues]) -> bool:
         """
